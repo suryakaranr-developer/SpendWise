@@ -128,6 +128,39 @@ jobs:
           -p:AppEnvironment=${{ matrix.environment }}
           -p:AndroidPackageFormat=apk
 
+      - name: Collect APK
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          bin=SpendWise.App/bin/Release/net10.0-android
+          apk=$(ls "$bin"/*-Signed.apk 2>/dev/null | head -1 || true)
+          [ -n "$apk" ] || apk=$(ls "$bin"/*.apk | head -1)
+          cp "$apk" "out/SpendWise-${{ matrix.environment }}-android.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ matrix.environment }}
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Show artifacts on the run summary
+        if: always()
+        run: |
+          {
+            echo "### Android build (${{ matrix.environment }})"
+            if ls out/* >/dev/null 2>&1; then
+              echo "| File | Size |"
+              echo "| --- | --- |"
+              for f in out/*; do echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"; done
+              echo ""
+              echo "Download the APK from **Artifacts** at the bottom of this page (kept 1 day). Signed AAB/APK builds come from the CD workflow."
+            else
+              echo "No installable file was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-ios:
     name: Build iOS (${{ matrix.environment }})
     # macOS minutes cost 10x: never on pull requests, and by hand only when asked for.
@@ -189,3 +222,35 @@ jobs:
           -p:AppEnvironment=${{ matrix.environment }}
           -p:RuntimeIdentifier=iossimulator-arm64
           -p:CodesignKey=
+
+      - name: Package simulator app
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          app=$(find SpendWise.App/bin/Release/net10.0-ios -maxdepth 3 -name '*.app' -type d | head -1)
+          [ -n "$app" ] || { echo "::error::No .app produced"; exit 1; }
+          ditto -c -k --sequesterRsrc --keepParent "$app" "out/SpendWise-${{ matrix.environment }}-ios-simulator.zip"
+
+      - name: Upload simulator build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-${{ matrix.environment }}
+          path: out/*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Show artifacts on the run summary
+        if: always()
+        run: |
+          {
+            echo "### iOS build (${{ matrix.environment }})"
+            if ls out/* >/dev/null 2>&1; then
+              echo "| File | Size |"
+              echo "| --- | --- |"
+              for f in out/*; do echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"; done
+              echo ""
+              echo "This is a simulator build (runs in the iOS Simulator). A signed, installable **IPA** is produced by the CD workflow once the iOS signing secrets are set."
+            else
+              echo "No installable file was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

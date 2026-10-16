@@ -243,6 +243,22 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Show artifacts on the run summary
+        if: always()
+        run: |
+          {
+            echo "### Android (${{ needs.setup.outputs.environment }}) v${{ needs.setup.outputs.display_version }}"
+            if ls ./artifacts/android/* >/dev/null 2>&1; then
+              echo "| File | Size |"
+              echo "| --- | --- |"
+              for f in ./artifacts/android/*; do echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"; done
+              echo ""
+              echo "Download the APK / AAB from **Artifacts** at the bottom of this page (kept 3 days)."
+            else
+              echo "No installable file was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ios:
     name: iOS (${{ needs.setup.outputs.environment }})
     needs: [setup, test]
@@ -435,6 +451,26 @@ jobs:
           -p:RuntimeIdentifier=iossimulator-arm64
           -p:CodesignKey=
 
+      # No signing secrets means no IPA is possible, so package the simulator build instead so the
+      # run still shows a downloadable iOS artifact.
+      - name: Package simulator app (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ./artifacts/ios
+          app=$(find SpendWise.App/bin/Release/net10.0-ios -maxdepth 3 -name '*.app' -type d | head -1)
+          [ -n "$app" ] || { echo "::error::No .app produced"; exit 1; }
+          ditto -c -k --sequesterRsrc --keepParent "$app" "./artifacts/ios/SpendWise-${{ needs.setup.outputs.environment }}-ios-simulator.zip"
+
+      - name: Upload simulator build (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-${{ needs.setup.outputs.environment }}-${{ needs.setup.outputs.display_version }}
+          path: ./artifacts/ios/*.zip
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Clean up keychain
         if: always()
         run: |
@@ -449,3 +485,19 @@ jobs:
           path: ./artifacts/ios/*.ipa
           if-no-files-found: error
           retention-days: 3
+
+      - name: Show artifacts on the run summary
+        if: always()
+        run: |
+          {
+            echo "### iOS (${{ needs.setup.outputs.environment }}) v${{ needs.setup.outputs.display_version }}"
+            if ls ./artifacts/ios/* >/dev/null 2>&1; then
+              echo "| File | Size |"
+              echo "| --- | --- |"
+              for f in ./artifacts/ios/*; do echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"; done
+              echo ""
+              echo "Download from **Artifacts** at the bottom of this page (kept 3 days). A `.zip` is a simulator build; an installable **IPA** needs the iOS signing secrets (IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE_BASE64)."
+            else
+              echo "No installable file was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
