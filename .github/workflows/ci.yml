@@ -164,9 +164,9 @@ jobs:
       - name: Select Xcode matching the iOS SDK
         run: |
           set -euo pipefail
-          want=$(dotnet workload list | awk '/^ios /{print $2}' | cut -d. -f1,2)
-          [ -n "$want" ] || { echo "::error::Could not read the iOS workload version"; dotnet workload list; exit 1; }
-          echo "iOS workload needs Xcode $want"
+          pack=$(ls -d "${DOTNET_ROOT:-$HOME/.dotnet}"/packs/Microsoft.iOS.Sdk.net*_* | sort -V | tail -1)
+          want=$(basename "$pack" | sed -E 's/.*_([0-9]+\.[0-9]+)$/\1/')
+          echo "iOS SDK pack: $pack (needs Xcode $want)"
           xcode=$(find /Applications -maxdepth 1 -name "Xcode_${want}*.app" -type d ! -iname '*beta*' ! -iname '*RC*' | sort -V | tail -1)
           if [ -z "$xcode" ]; then
             echo "::error::Xcode $want is not installed on this runner. Installed:"
