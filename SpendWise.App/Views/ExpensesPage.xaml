@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:SpendWise.Core.ViewModels;assembly=SpendWise.Core"
+             xmlns:models="clr-namespace:SpendWise.Core.Models;assembly=SpendWise.Core"
+             x:Class="SpendWise.App.Views.ExpensesPage"
+             x:DataType="vm:ExpensesViewModel"
+             BackgroundColor="{StaticResource Surface}"
+             Title="SpendWise">
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Padding="20,16" RowSpacing="12">
+
+        <Label Grid.Row="0" Text="SpendWise" FontSize="28" FontAttributes="Bold" />
+
+        <Border Grid.Row="1" BackgroundColor="{StaticResource Primary}" StrokeThickness="0"
+                StrokeShape="RoundRectangle 18" Padding="20">
+            <VerticalStackLayout Spacing="6">
+                <Label Text="Total spent" TextColor="#CCFBF1" FontSize="14" />
+                <Label Text="{Binding Total, StringFormat='{0:C}'}" TextColor="White" FontSize="34" FontAttributes="Bold" />
+                <FlexLayout BindableLayout.ItemsSource="{Binding Categories}" Wrap="Wrap" Margin="0,6,0,0">
+                    <BindableLayout.ItemTemplate>
+                        <DataTemplate x:DataType="models:CategoryTotal">
+                            <Border BackgroundColor="#115E59" StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                    Padding="10,4" Margin="0,0,6,6">
+                                <Label TextColor="White" FontSize="12">
+                                    <Label.Text>
+                                        <MultiBinding StringFormat="{}{0}: {1:C}">
+                                            <Binding Path="Category" />
+                                            <Binding Path="Total" />
+                                        </MultiBinding>
+                                    </Label.Text>
+                                </Label>
+                            </Border>
+                        </DataTemplate>
+                    </BindableLayout.ItemTemplate>
+                </FlexLayout>
+            </VerticalStackLayout>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <CollectionView ItemsSource="{Binding Expenses}" SelectionMode="None" IsVisible="{Binding HasItems}">
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="models:Expense">
+                        <SwipeView>
+                            <SwipeView.RightItems>
+                                <SwipeItems>
+                                    <SwipeItem Text="Delete" BackgroundColor="{StaticResource Danger}"
+                                               Command="{Binding Source={RelativeSource AncestorType={x:Type vm:ExpensesViewModel}}, Path=DeleteCommand}"
+                                               CommandParameter="{Binding .}" />
+                                </SwipeItems>
+                            </SwipeView.RightItems>
+                            <Border BackgroundColor="{StaticResource CardBackground}" StrokeThickness="0"
+                                    StrokeShape="RoundRectangle 14" Padding="16,12" Margin="0,0,0,8">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <VerticalStackLayout Spacing="2">
+                                        <Label Text="{Binding Title}" FontSize="16" FontAttributes="Bold" />
+                                        <Label FontSize="12" TextColor="{StaticResource TextMuted}">
+                                            <Label.Text>
+                                                <MultiBinding StringFormat="{}{0} · {1:d MMM yyyy}">
+                                                    <Binding Path="Category" />
+                                                    <Binding Path="Date" />
+                                                </MultiBinding>
+                                            </Label.Text>
+                                        </Label>
+                                    </VerticalStackLayout>
+                                    <Label Grid.Column="1" Text="{Binding Amount, StringFormat='{0:C}'}"
+                                           FontSize="16" FontAttributes="Bold" VerticalOptions="Center" />
+                                </Grid>
+                            </Border>
+                        </SwipeView>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+            <Label Text="No expenses yet.&#10;Tap “Add expense” to record your first one."
+                   IsVisible="{Binding IsEmpty}" HorizontalTextAlignment="Center"
+                   VerticalOptions="Center" TextColor="{StaticResource TextMuted}" />
+        </Grid>
+
+        <VerticalStackLayout Grid.Row="3" Spacing="8">
+            <Button Text="Add expense" Command="{Binding AddCommand}" />
+            <Label x:Name="BuildLabel" HorizontalTextAlignment="Center" FontSize="11" TextColor="{StaticResource TextMuted}" />
+        </VerticalStackLayout>
+    </Grid>
+</ContentPage>

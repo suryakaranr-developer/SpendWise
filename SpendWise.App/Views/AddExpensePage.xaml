@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:SpendWise.Core.ViewModels;assembly=SpendWise.Core"
+             x:Class="SpendWise.App.Views.AddExpensePage"
+             x:DataType="vm:AddExpenseViewModel"
+             BackgroundColor="{StaticResource Surface}"
+             Title="Add expense">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="20,16" Spacing="14">
+            <Label Text="New expense" FontSize="24" FontAttributes="Bold" />
+
+            <Label Text="What was it for?" FontSize="13" TextColor="{StaticResource TextMuted}" />
+            <Entry Text="{Binding Title}" Placeholder="e.g. Lunch" />
+
+            <Label Text="Amount" FontSize="13" TextColor="{StaticResource TextMuted}" />
+            <Entry Text="{Binding AmountText}" Placeholder="0.00" Keyboard="Numeric" />
+
+            <Label Text="Category" FontSize="13" TextColor="{StaticResource TextMuted}" />
+            <Picker ItemsSource="{Binding CategoryOptions}" SelectedItem="{Binding Category}" />
+
+            <Label Text="Date" FontSize="13" TextColor="{StaticResource TextMuted}" />
+            <DatePicker Date="{Binding Date}" />
+
+            <Button Text="Save" Command="{Binding SaveCommand}" IsEnabled="{Binding IsNotBusy}" Margin="0,10,0,0" />
+            <Button Text="Cancel" Command="{Binding CancelCommand}" BackgroundColor="Transparent" TextColor="{StaticResource Primary}" />
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

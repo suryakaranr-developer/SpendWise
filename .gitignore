@@ -1,0 +1,15 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+*.user
+.vs/
+.idea/
+.DS_Store
+TestResults/
+
+# Never commit signing material - keep it in GitHub Secrets
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+*.cer

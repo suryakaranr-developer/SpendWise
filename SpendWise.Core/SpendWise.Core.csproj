@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Plain net10.0, deliberately not a MAUI target: models, services and view models build and
+         unit-test without the MAUI workload or a device. The app head supplies the platform
+         implementations of the small interfaces defined here. -->
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    </ItemGroup>
+
+</Project>

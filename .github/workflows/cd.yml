@@ -1,0 +1,448 @@
+name: CD
+
+# Builds installable artifacts for ONE environment per run, on the platform(s) you pick.
+#
+# Run it from the Actions tab ("Run workflow"): choose QA, STAGING or RELEASE, then Android, iOS
+# or both. Only the chosen environment is built, for both platforms, so no minutes are spent on
+# flavours you did not ask for. Pushing a tag also works: v1.2.3-qa -> QA, v1.2.3-staging ->
+# STAGING, v1.2.3 -> RELEASE (both platforms).
+#
+# Signing is optional. With no signing secrets the pipeline still runs green and emits an
+# unsigned AAB + APK and a simulator build. Add the secrets (repo-level or on the matching GitHub
+# Environment) and the same jobs emit a signed AAB + APK and an IPA.
+#
+# Cost controls: hosted Linux for tests and Android; macOS only when iOS is chosen and only after
+# tests pass; 3-day artifact retention; job timeouts; superseded runs of the same ref/environment
+# are not cancelled (a release must finish) but never run in parallel.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to build (applies to Android and iOS)
+        required: true
+        type: choice
+        options: [QA, STAGING, RELEASE]
+        default: QA
+      platforms:
+        description: Platforms to build
+        required: true
+        type: choice
+        options: [android, ios, both]
+        default: android
+      version:
+        description: Display version, e.g. 1.4.0 (defaults to 1.0.<run number>)
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: cd-${{ github.ref }}-${{ inputs.environment || 'tag' }}
+  cancel-in-progress: false
+
+env:
+  # Apple Developer Team ID (the App ID prefix) the iOS provisioning profile must belong to.
+  # Set it as a repository variable IOS_TEAM_ID; leave it unset to skip the team check.
+  IOS_TEAM_ID: ${{ vars.IOS_TEAM_ID }}
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  # Resolves environment, version and platform selection once so the build jobs agree, whether
+  # triggered by hand or by a tag push.
+  setup:
+    name: Resolve build parameters
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      display_version: ${{ steps.resolve.outputs.display_version }}
+      build_version: ${{ github.run_number }}
+      build_android: ${{ steps.resolve.outputs.build_android }}
+      build_ios: ${{ steps.resolve.outputs.build_ios }}
+    steps:
+      - id: resolve
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            environment="${{ inputs.environment }}"
+            platforms="${{ inputs.platforms }}"
+            version="${{ inputs.version }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            case "$tag" in
+              *-qa)      environment=QA ;;
+              *-staging) environment=STAGING ;;
+              *)         environment=RELEASE ;;
+            esac
+            platforms=both
+            version="$(printf '%s' "${tag#v}" | sed -E 's/-(qa|staging)$//')"
+          fi
+
+          [ -n "$version" ] || version="1.0.${{ github.run_number }}"
+
+          case "$platforms" in
+            both)    build_android=true;  build_ios=true  ;;
+            android) build_android=true;  build_ios=false ;;
+            ios)     build_android=false; build_ios=true  ;;
+          esac
+
+          {
+            echo "environment=$environment"
+            echo "display_version=$version"
+            echo "build_android=$build_android"
+            echo "build_ios=$build_ios"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Building $environment v$version (android=$build_android ios=$build_ios)"
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Test
+        run: >
+          dotnet test SpendWise.Core.Tests/SpendWise.Core.Tests.csproj
+          --configuration Release
+
+  android:
+    name: Android (${{ needs.setup.outputs.environment }})
+    needs: [setup, test]
+    if: needs.setup.outputs.build_android == 'true'
+    # Override with the ANDROID_RUNNER repo variable (JSON label list) to use your own machine.
+    runs-on: ${{ fromJSON(vars.ANDROID_RUNNER || '["ubuntu-24.04"]') }}
+    timeout-minutes: 45
+    # Drives approval gates and scopes the signing secrets. Create QA, STAGING and RELEASE under
+    # Settings -> Environments if you want per-environment secrets (repo-level secrets also work).
+    environment: ${{ needs.setup.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: '17'
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-android-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-android-${{ runner.os }}-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Install MAUI Android workload
+        run: dotnet workload install maui-android --skip-sign-check
+
+      # Secrets cannot be referenced from a job-level `if`, so signing availability is resolved
+      # into a step output the later steps branch on.
+      - name: Check for signing secrets
+        id: signing
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret - producing an unsigned APK/AAB."
+          fi
+
+      - name: Decode keystore
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          # Written outside the workspace so a later artifact glob can never pick it up.
+          printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/signing.keystore"
+
+      # AndroidPackageFormats takes a list, so an .aab for the store and an .apk for sideloading
+      # come out of one publish. The semicolon is escaped as %3B so MSBuild does not read it as
+      # the start of a second -p: property.
+      - name: Publish signed AAB + APK
+        if: steps.signing.outputs.enabled == 'true'
+        run: >
+          dotnet publish SpendWise.App/SpendWise.App.csproj
+          --framework net10.0-android
+          -p:TargetFrameworkOverride=net10.0-android
+          --configuration Release
+          --output ./artifacts/android
+          -p:AppEnvironment=${{ needs.setup.outputs.environment }}
+          -p:ApplicationDisplayVersion=${{ needs.setup.outputs.display_version }}
+          -p:ApplicationVersion=${{ needs.setup.outputs.build_version }}
+          -p:AndroidPackageFormats=aab%3Bapk
+          -p:AndroidKeyStore=true
+          -p:AndroidSigningKeyStore=$RUNNER_TEMP/signing.keystore
+          -p:AndroidSigningStorePass='${{ secrets.ANDROID_KEYSTORE_PASSWORD }}'
+          -p:AndroidSigningKeyAlias='${{ secrets.ANDROID_KEY_ALIAS }}'
+          -p:AndroidSigningKeyPass='${{ secrets.ANDROID_KEY_PASSWORD }}'
+
+      # Unsigned: the .aab is a build artifact only (Play rejects it until signed).
+      - name: Publish unsigned AAB + APK
+        if: steps.signing.outputs.enabled != 'true'
+        run: >
+          dotnet publish SpendWise.App/SpendWise.App.csproj
+          --framework net10.0-android
+          -p:TargetFrameworkOverride=net10.0-android
+          --configuration Release
+          --output ./artifacts/android
+          -p:AppEnvironment=${{ needs.setup.outputs.environment }}
+          -p:ApplicationDisplayVersion=${{ needs.setup.outputs.display_version }}
+          -p:ApplicationVersion=${{ needs.setup.outputs.build_version }}
+          -p:AndroidPackageFormats=aab%3Bapk
+          -p:AndroidKeyStore=false
+
+      # The universal APK is built by an Android SDK target that runs after publish has copied
+      # files to --output, so it is left behind in bin/. Collect it explicitly.
+      - name: Collect universal APK
+        run: |
+          set -euo pipefail
+          bin=SpendWise.App/bin/Release/net10.0-android
+          count=$(find "$bin" -maxdepth 1 -name '*.apk' | wc -l | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No APK found in $bin - expected one alongside the AAB."
+            exit 1
+          fi
+          cp "$bin"/*.apk ./artifacts/android/
+          ls -l ./artifacts/android/
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/signing.keystore"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ needs.setup.outputs.environment }}-${{ needs.setup.outputs.display_version }}
+          path: |
+            ./artifacts/android/*.apk
+            ./artifacts/android/*.aab
+          if-no-files-found: error
+          retention-days: 3
+
+  ios:
+    name: iOS (${{ needs.setup.outputs.environment }})
+    needs: [setup, test]
+    if: needs.setup.outputs.build_ios == 'true'
+    # macOS bills at 10x Linux. Tests gate this job; set the IOS_RUNNER repo variable to e.g.
+    # ["self-hosted","macOS","ARM64","ios"] to move iOS builds to your own Mac.
+    runs-on: ${{ fromJSON(vars.IOS_RUNNER || '["macos-latest"]') }}
+    timeout-minutes: 45
+    environment: ${{ needs.setup.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-ios-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-ios-${{ runner.os }}-
+
+      - name: Install MAUI iOS workload
+        run: dotnet workload install maui-ios --skip-sign-check
+
+      # Each iOS SDK pack is tied to one Xcode release (SDK 26.5 needs Xcode 26.5) and the runner's
+      # default Xcode is often newer. Select the Xcode the installed SDK asks for.
+      - name: Select Xcode matching the iOS SDK
+        run: |
+          set -euo pipefail
+          pack=$(ls -d "${DOTNET_ROOT:-$HOME/.dotnet}"/packs/Microsoft.iOS.Sdk.net*_* | sort -V | tail -1)
+          want=$(basename "$pack" | sed -E 's/.*_([0-9]+\.[0-9]+)$/\1/')
+          echo "iOS SDK pack: $pack (needs Xcode $want)"
+          xcode=$(find /Applications -maxdepth 1 -name "Xcode_${want}*.app" -type d ! -iname '*beta*' ! -iname '*RC*' | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            echo "::error::Xcode $want is not installed on this runner. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          echo "Using $xcode"
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          xcodebuild -version
+
+      - name: Check for signing secrets
+        id: signing
+        env:
+          CERT: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [ -n "$CERT" ] && [ -n "$PROFILE" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No iOS signing secrets - building for the simulator instead of an IPA."
+          fi
+
+      - name: Import certificate and provisioning profile
+        id: import
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          CERT: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          cert_path="$RUNNER_TEMP/cert.p12"
+          profile_path="$RUNNER_TEMP/profile.mobileprovision"
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          keychain_password="$(uuidgen)"
+
+          printf '%s' "$CERT" | base64 -d > "$cert_path"
+          printf '%s' "$PROFILE" | base64 -d > "$profile_path"
+
+          # A throwaway keychain rather than the login one: unlocked only for this job and
+          # deleted in the cleanup step.
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$cert_path" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security list-keychain -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" > /dev/null
+
+          # Read the profile so the signing identity, profile name and App ID come from the
+          # secrets themselves instead of more values to keep in sync.
+          plist="$RUNNER_TEMP/profile.plist"
+          security cms -D -i "$profile_path" > "$plist"
+          profile_uuid=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$plist")
+          profile_name=$(/usr/libexec/PlistBuddy -c "Print :Name" "$plist")
+          profile_appid=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$plist")
+          profile_team=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" "$plist")
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$profile_path" ~/Library/MobileDevice/Provisioning\ Profiles/"$profile_uuid".mobileprovision
+
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(.*\)".*/\1/p' | head -1)
+          [ -n "$identity" ] || { echo "::error::No code-signing identity found in the .p12"; exit 1; }
+
+          echo "Profile: $profile_name ($profile_appid, team $profile_team)"
+          echo "Identity: $identity"
+          {
+            echo "profile_name=$profile_name"
+            echo "profile_appid=$profile_appid"
+            echo "team=$profile_team"
+            echo "identity=$identity"
+          } >> "$GITHUB_OUTPUT"
+
+          rm -f "$cert_path" "$profile_path" "$plist"
+
+      # A profile only works for the App ID(s) it was created for. Fail early with a clear
+      # message instead of a cryptic Xcode signing error. Exact and wildcard
+      # (com.suryakaran.spendwise.*) profiles are both accepted.
+      - name: Check profile matches the app's bundle id
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          PROFILE_APPID: ${{ steps.import.outputs.profile_appid }}
+          TEAM: ${{ steps.import.outputs.team }}
+        run: |
+          bundle_id=$(dotnet msbuild SpendWise.App/SpendWise.App.csproj \
+            -p:Configuration=Release -p:AppEnvironment=${{ needs.setup.outputs.environment }} \
+            -p:TargetFramework=net10.0-ios -p:TargetFrameworkOverride=net10.0-ios \
+            -getProperty:ApplicationId | tr -d '[:space:]')
+          echo "App bundle id : $bundle_id"
+          echo "Profile app id: $PROFILE_APPID"
+          if [ -n "${IOS_TEAM_ID:-}" ] && [ "$TEAM" != "$IOS_TEAM_ID" ]; then
+            echo "::error::Profile belongs to team '$TEAM' but IOS_TEAM_ID is '$IOS_TEAM_ID'."
+            exit 1
+          fi
+          full="$TEAM.$bundle_id"
+          case "$PROFILE_APPID" in
+            "$full"|"$TEAM.*") echo "Profile matches." ;;
+            *\*)
+              prefix="${PROFILE_APPID%\*}"
+              case "$full" in
+                "$prefix"*) echo "Wildcard profile matches." ;;
+                *) echo "::error::Wildcard profile '$PROFILE_APPID' does not cover '$full'."; exit 1 ;;
+              esac ;;
+            *)
+              echo "::error::Profile is for '$PROFILE_APPID' but the ${{ needs.setup.outputs.environment }} build uses bundle id '$bundle_id'. Upload a profile for that App ID (or a wildcard one)."
+              exit 1 ;;
+          esac
+
+      - name: Publish signed IPA
+        if: steps.signing.outputs.enabled == 'true'
+        run: >
+          dotnet publish SpendWise.App/SpendWise.App.csproj
+          --framework net10.0-ios
+          -p:TargetFrameworkOverride=net10.0-ios
+          --configuration Release
+          --output ./artifacts/ios
+          -p:AppEnvironment=${{ needs.setup.outputs.environment }}
+          -p:ApplicationDisplayVersion=${{ needs.setup.outputs.display_version }}
+          -p:ApplicationVersion=${{ needs.setup.outputs.build_version }}
+          -p:RuntimeIdentifier=ios-arm64
+          -p:BuildIpa=true
+          -p:CodesignKey='${{ steps.import.outputs.identity }}'
+          -p:CodesignProvision='${{ steps.import.outputs.profile_name }}'
+
+      # The IPA is produced by the iOS SDK's own targets and is not guaranteed to be copied to
+      # --output (same behaviour as the Android APK), so collect it explicitly.
+      - name: Collect IPA
+        if: steps.signing.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ./artifacts/ios
+          ipa=$(find SpendWise.App/bin ./artifacts/ios -name '*.ipa' -print -quit)
+          [ -n "$ipa" ] || { echo "::error::No .ipa produced"; exit 1; }
+          echo "IPA = $ipa"
+          case "$ipa" in ./artifacts/ios/*) ;; *) cp "$ipa" ./artifacts/ios/ ;; esac
+          ls -l ./artifacts/ios/
+
+      # Without a certificate an IPA is impossible, so verify the code still compiles for iOS by
+      # targeting the simulator, which needs no signing identity.
+      - name: Build for simulator (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
+        run: >
+          dotnet build SpendWise.App/SpendWise.App.csproj
+          --framework net10.0-ios
+          -p:TargetFrameworkOverride=net10.0-ios
+          --configuration Release
+          -p:AppEnvironment=${{ needs.setup.outputs.environment }}
+          -p:ApplicationDisplayVersion=${{ needs.setup.outputs.display_version }}
+          -p:ApplicationVersion=${{ needs.setup.outputs.build_version }}
+          -p:RuntimeIdentifier=iossimulator-arm64
+          -p:CodesignKey=
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision || true
+
+      - name: Upload IPA
+        if: steps.signing.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ needs.setup.outputs.environment }}-${{ needs.setup.outputs.display_version }}
+          path: ./artifacts/ios/*.ipa
+          if-no-files-found: error
+          retention-days: 3

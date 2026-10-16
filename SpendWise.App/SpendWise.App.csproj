@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFrameworks>net10.0-android;net10.0-ios</TargetFrameworks>
+
+		<!-- Narrows the build to one platform, e.g. -p:TargetFrameworkOverride=net10.0-android.
+		     Restore evaluates every TFM listed above regardless of the framework argument, so a
+		     Linux runner would otherwise try to resolve the iOS workload packs and fail. -->
+		<TargetFrameworks Condition="'$(TargetFrameworkOverride)' != ''">$(TargetFrameworkOverride)</TargetFrameworks>
+
+		<OutputType>Exe</OutputType>
+		<RootNamespace>SpendWise.App</RootNamespace>
+		<UseMaui>true</UseMaui>
+		<SingleProject>true</SingleProject>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+
+		<!-- Display name and app id are overridden per environment by Build/Environments.props -->
+		<ApplicationTitle>SpendWise</ApplicationTitle>
+		<ApplicationId>com.suryakaran.spendwise</ApplicationId>
+
+		<!-- Versions: CI passes the real values with -p:ApplicationDisplayVersion / -p:ApplicationVersion -->
+		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+		<ApplicationVersion>1</ApplicationVersion>
+
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">21.0</SupportedOSPlatformVersion>
+	</PropertyGroup>
+
+	<Import Project="..\Build\Environments.props" />
+
+	<ItemGroup>
+		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#0F766E" />
+		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#0F766E" BaseSize="128,128" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\SpendWise.Core\SpendWise.Core.csproj" />
+	</ItemGroup>
+
+</Project>

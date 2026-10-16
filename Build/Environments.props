@@ -1,0 +1,46 @@
+<Project>
+
+    <!--
+        Per-environment build configuration, imported by the app head after its own PropertyGroup
+        so these values win.
+
+        Selected with -p:AppEnvironment=QA|STAGING|RELEASE. Defaults to RELEASE so a plain
+        `dotnet build` from an IDE builds the production flavour.
+
+        QA and STAGING get a suffixed ApplicationId so all three builds install side by side on one
+        device. RELEASE keeps the unsuffixed id (changing it later would orphan existing installs).
+        iOS note: each id needs a provisioning profile; a wildcard profile for
+        com.suryakaran.spendwise.* covers all three.
+    -->
+
+    <PropertyGroup Condition="'$(AppEnvironment)' == ''">
+        <AppEnvironment>RELEASE</AppEnvironment>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(AppEnvironment)' == 'QA'">
+        <ApplicationTitle>SpendWise QA</ApplicationTitle>
+        <ApplicationId>com.suryakaran.spendwise.qa</ApplicationId>
+        <DefineConstants>$(DefineConstants);ENV_QA</DefineConstants>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(AppEnvironment)' == 'STAGING'">
+        <ApplicationTitle>SpendWise STG</ApplicationTitle>
+        <ApplicationId>com.suryakaran.spendwise.staging</ApplicationId>
+        <DefineConstants>$(DefineConstants);ENV_STAGING</DefineConstants>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(AppEnvironment)' == 'RELEASE'">
+        <ApplicationTitle>SpendWise</ApplicationTitle>
+        <ApplicationId>com.suryakaran.spendwise</ApplicationId>
+        <DefineConstants>$(DefineConstants);ENV_RELEASE</DefineConstants>
+    </PropertyGroup>
+
+    <!-- Baked into the assembly; read back at runtime by BuildInfo so the app can show which flavour it is. -->
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+            <_Parameter1>AppEnvironment</_Parameter1>
+            <_Parameter2>$(AppEnvironment)</_Parameter2>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+</Project>

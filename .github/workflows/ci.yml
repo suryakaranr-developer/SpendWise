@@ -1,0 +1,188 @@
+name: CI
+
+# Fast feedback on every change, tuned for GitHub Actions minutes (macOS bills at 10x Linux):
+#   - Docs-only changes skip the pipeline (paths-ignore).
+#   - Unit tests and Android run on hosted Linux; iOS (macOS) starts only after both pass.
+#   - Pull requests and pushes build ONE environment (QA). Pick the environment, or "all", when
+#     you run it by hand from the Actions tab, so nobody pays for flavours they did not ask for.
+#   - Runners can be overridden with repo variables ANDROID_RUNNER / IOS_RUNNER (JSON label
+#     list), e.g. IOS_RUNNER=["self-hosted","macOS","ARM64","ios"].
+#   - Every job has a timeout so a hung build cannot burn the allowance.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', '.gitignore']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', '.gitignore']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to compile
+        required: true
+        type: choice
+        options: [QA, STAGING, RELEASE, all]
+        default: QA
+      include_ios:
+        description: Also compile for iOS (uses macOS minutes)
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # Only the platform-free projects: restoring the whole solution would pull in the MAUI
+      # targets and fail without the workload.
+      - name: Test
+        run: >
+          dotnet test SpendWise.Core.Tests/SpendWise.Core.Tests.csproj
+          --configuration Release
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory ./TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ./TestResults
+          retention-days: 1
+
+  build-android:
+    name: Build Android (${{ matrix.environment }})
+    runs-on: ${{ fromJSON(vars.ANDROID_RUNNER || '["ubuntu-24.04"]') }}
+    timeout-minutes: 30
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.environment == 'all' && '["QA","STAGING","RELEASE"]' || format('["{0}"]', inputs.environment)) || '["QA"]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: '17'
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-android-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-android-${{ runner.os }}-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Install MAUI Android workload
+        run: dotnet workload install maui-android --skip-sign-check
+
+      # Compile only. Producing a shippable artifact is the CD pipeline's job.
+      - name: Build
+        run: >
+          dotnet build SpendWise.App/SpendWise.App.csproj
+          --framework net10.0-android
+          -p:TargetFrameworkOverride=net10.0-android
+          --configuration Release
+          -p:AppEnvironment=${{ matrix.environment }}
+          -p:AndroidPackageFormat=apk
+
+  build-ios:
+    name: Build iOS (${{ matrix.environment }})
+    # macOS minutes cost 10x: never on pull requests, and by hand only when asked for.
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.include_ios)
+    runs-on: ${{ fromJSON(vars.IOS_RUNNER || '["macos-latest"]') }}
+    timeout-minutes: 30
+    needs: [test, build-android]
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.environment == 'all' && '["QA","STAGING","RELEASE"]' || format('["{0}"]', inputs.environment)) || '["QA"]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-ios-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-ios-${{ runner.os }}-
+
+      - name: Install MAUI iOS workload
+        run: dotnet workload install maui-ios --skip-sign-check
+
+      # Each iOS SDK pack is tied to one Xcode release (SDK 26.5 needs Xcode 26.5) and the runner's
+      # default Xcode is often newer. Select the Xcode the installed SDK asks for.
+      - name: Select Xcode matching the iOS SDK
+        run: |
+          set -euo pipefail
+          pack=$(ls -d "${DOTNET_ROOT:-$HOME/.dotnet}"/packs/Microsoft.iOS.Sdk.net*_* | sort -V | tail -1)
+          want=$(basename "$pack" | sed -E 's/.*_([0-9]+\.[0-9]+)$/\1/')
+          echo "iOS SDK pack: $pack (needs Xcode $want)"
+          xcode=$(find /Applications -maxdepth 1 -name "Xcode_${want}*.app" -type d ! -iname '*beta*' ! -iname '*RC*' | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            echo "::error::Xcode $want is not installed on this runner. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          echo "Using $xcode"
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          xcodebuild -version
+
+      # Compile only, for the simulator so no certificate is needed.
+      - name: Build
+        run: >
+          dotnet build SpendWise.App/SpendWise.App.csproj
+          --framework net10.0-ios
+          -p:TargetFrameworkOverride=net10.0-ios
+          --configuration Release
+          -p:AppEnvironment=${{ matrix.environment }}
+          -p:RuntimeIdentifier=iossimulator-arm64
+          -p:CodesignKey=
