@@ -164,8 +164,9 @@ jobs:
       - name: Select Xcode matching the iOS SDK
         run: |
           set -euo pipefail
-          pack=$(ls -d "${DOTNET_ROOT:-$HOME/.dotnet}"/packs/Microsoft.iOS.Sdk.net*_* | sort -V | tail -1)
-          want=$(basename "$pack" | sed -E 's/.*_([0-9]+\.[0-9]+)$/\1/')
+          pack=$(ls -d "${DOTNET_ROOT:-$HOME/.dotnet}"/packs/Microsoft.iOS.Sdk.net*_*/*/ | sort -V | tail -1)
+          # The pack's own manifest says which Xcode it requires (its folder name can differ).
+          want=$(/usr/libexec/PlistBuddy -c "Print :RecommendedXcodeVersion" "${pack}Versions.plist")
           echo "iOS SDK pack: $pack (needs Xcode $want)"
           xcode=$(find /Applications -maxdepth 1 -name "Xcode_${want}*.app" -type d ! -iname '*beta*' ! -iname '*RC*' | sort -V | tail -1)
           if [ -z "$xcode" ]; then
